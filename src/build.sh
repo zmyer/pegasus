@@ -93,7 +93,8 @@ if [ -n "$BOOST_DIR" ]
 then
     echo "Use customized boost: $BOOST_DIR"
     CMAKE_OPTIONS="$CMAKE_OPTIONS -DBoost_NO_BOOST_CMAKE=ON -DBOOST_ROOT=$BOOST_DIR -DBoost_NO_SYSTEM_PATHS=ON"
-    export EXTRA_LDFLAGS="$EXTRA_LDFLAGS -Wl,-rpath $BOOST_DIR/lib"
+    # for makefile
+    export BOOST_ROOT=$BOOST_DIR
 else
     echo "Use system boost"
 fi
@@ -185,6 +186,3 @@ else
     cp ./config-bench.ini $DSN_ROOT/bin/pegasus_bench/config.ini
     echo "Build pegasus_bench succeed"
 fi
-
-install ./ext/libevent/lib/libevent-2.0.so.5.1.9 $DSN_ROOT/lib/libevent-2.0.so.5
-

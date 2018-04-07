@@ -32,12 +32,12 @@ Please notice that Pegasus can not be built until the following packages meet th
 For Ubuntu:
 
 ```
-sudo apt-get install build-essential cmake libboost-all-dev libaio-dev libsnappy-dev libbz2-dev libreadline-dev libgflags-dev
+sudo apt-get install build-essential cmake libboost-all-dev libaio-dev libsnappy-dev libbz2-dev libreadline-dev libgflags-dev patch
 ```
 
 For CentOS:
 ```
-yum -y install cmake boost-devel libaio-devel snappy-devel bzip2-devel readline-devel
+yum -y install cmake boost-devel libaio-devel snappy-devel bzip2-devel readline-devel patch
 ```
 
 Please make sure you install the proper version of GCC, CMake and Boost.
@@ -52,13 +52,22 @@ Please make sure you install the proper version of GCC, CMake and Boost.
 2. build
 
    ```
-   cd pegasus && ./run.sh build -g github
+   cd pegasus && ./run.sh build
    ```
    if Boost is installed at some custom path , please tell the build script the install path of Boost:
 
    ```
-   ./run.sh build -g github -b /your/boost/installation/path
+   ./run.sh build -b /your/boost/installation/path
    ```
+
+Generally, the build process of Pegasus consists of 4 parts:
+
+1. Download the thirdparty dependencies to "rdsn/thirdparty" and build them, and the output headers/libraries/binaries are installed in "rdsn/thirdparty/output".
+2. build the rdsn project, which is a dependency of our KV storage. The output headers/libraries/binaries are installed in "rdsn/builder/output". The build script will create a symbolic link "DSN_ROOT" in the pegasus project root.
+3. build rocksdb in "rocksdb" dir, which is modified from [facebook/rocksdb](https://github.com/facebook/rocksdb)
+4. build pegasus's KV-layer in "src".
+
+**Please make sure the thirdparty are successfully downloaded and built before subsequent parts**.
 
 ## Run in standalone mode
 

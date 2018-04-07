@@ -11,12 +11,22 @@
 #include "commands.h"
 
 std::string s_last_history;
-const int max_params_count = 10;
+const int max_params_count = 10000;
 std::map<std::string, command_executor *> commands_map;
 shell_context global_context;
 size_t max_length = 0;
 
+void print_help();
+bool help_info(command_executor *e, shell_context *sc, arguments args)
+{
+    print_help();
+    return true;
+}
+
 command_executor commands[] = {
+    {
+        "help", "print help info", "", help_info,
+    },
     {
         "version", "get the shell version", "", version,
     },
@@ -94,6 +104,18 @@ command_executor commands[] = {
         use_app_as_current,
     },
     {
+        "escape_all",
+        "if escape all characters when printing key/value bytes",
+        "[true|false]",
+        process_escape_all,
+    },
+    {
+        "timeout",
+        "default timeout in milliseconds for read/write operations",
+        "[time_in_ms]",
+        process_timeout,
+    },
+    {
         "hash",
         "calculate the hash result for some hash key",
         "<hash_key> <sort_key>",
@@ -118,6 +140,16 @@ command_executor commands[] = {
         data_operations,
     },
     {
+        "multi_get_range",
+        "get multiple values under sort key range for a single hash key",
+        "<hash_key> <start_sort_key> <stop_sort_key> "
+        "[--start_inclusive|-a <true|false>] [--stop_inclusive|-b <true|false>] "
+        "[--sort_key_filter_type|-s <anywhere|prefix|postfix>] "
+        "[--sort_key_filter_pattern|-y <str>] "
+        "[--max_count|-n <num>] [--no_value|-i] [--reverse|-r]",
+        data_operations,
+    },
+    {
         "multi_get_sortkeys",
         "get multiple sort keys for a single hash key",
         "<hash_key>",
@@ -133,6 +165,16 @@ command_executor commands[] = {
         data_operations,
     },
     {
+        "multi_del_range",
+        "delete multiple values under sort key range for a single hash key",
+        "<hash_key> <start_sort_key> <stop_sort_key> "
+        "[--start_inclusive|-a <true|false>] [--stop_inclusive|-b <true|false>] "
+        "[--sort_key_filter_type|-s <anywhere|prefix|postfix>] "
+        "[--sort_key_filter_pattern|-y <str>] "
+        "[--output|-o <file_name>] [--silent|-i]",
+        data_operations,
+    },
+    {
         "exist", "check value exist", "<hash_key> <sort_key>", data_operations,
     },
     {
@@ -142,18 +184,26 @@ command_executor commands[] = {
         "ttl", "query ttl for a specific key", "<hash_key> <sort_key>", data_operations,
     },
     {
-        "scan",
+        "hash_scan",
         "scan all sorted keys for a single hash key",
-        "<hash_key> [start_sort_key] [stop_sort_key] [-d|--detailed] [-n|--count "
-        "<max_kv_count>] "
-        "[-t|--timeout_ms <num>]",
+        "<hash_key> <start_sort_key> <stop_sort_key> [-d|--detailed] "
+        "[-o|--output <file_name>] [-n|--max_count <num>] [-t|--timeout_ms <num>] "
+        "[--start_inclusive|-a <true|false>] [--stop_inclusive|-b <true|false>] "
+        "[--sort_key_filter_type|-s <anywhere|prefix|postfix>] "
+        "[--sort_key_filter_pattern|-y <str>] "
+        "[--no_value|-i]",
         data_operations,
     },
     {
-        "scan_all",
-        "scan among all hash_keys",
-        "-d|--detailed [-n|--count <max_kv_count>] [-o|--output <file_name>] "
-        "[-t|--timeout_ms <num>]",
+        "full_scan",
+        "scan all hash keys",
+        "[-d|--detailed] [-p|--partition <num>] [-o|--output <file_name>] "
+        "[-n|--max_count <num>] [-t|--timeout_ms <num>] "
+        "[--hash_key_filter_type|-h <anywhere|prefix|postfix>] "
+        "[--hash_key_filter_pattern|-x <str>] "
+        "[--sort_key_filter_type|-s <anywhere|prefix|postfix>] "
+        "[--sort_key_filter_pattern|-y <str>] "
+        "[--no_value|-i]",
         data_operations,
     },
     {
@@ -177,7 +227,7 @@ command_executor commands[] = {
         "get app row count",
         "[-s|--max_split_count <num>] [-b|--max_batch_count <num>] "
         "[-t|--timeout_ms <num>] "
-        "[-z|--stat_size]",
+        "[-z|--stat_size] [-c|--top_count <num>]",
         data_operations,
     },
     {
@@ -233,6 +283,55 @@ command_executor commands[] = {
         "[-b|--skip_bad_nodes] [-l|--skip_lost_partitions] [-o|--output "
         "FILE_NAME]",
         recover,
+    },
+    {
+        "add_backup_policy",
+        "add new cold backup policy",
+        "<-p|--policy_name p1> <-b|--backup_provider_type provider> <-a|--app_ids 1,2,3..> "
+        "<-i|--backup_interval_seconds sec> <-s|--start_time hour:minute> "
+        "<-c|--backup_history_cnt count>",
+        add_backup_policy,
+    },
+    {"ls_backup_policy", "list the names of the subsistent backup policies", "", ls_backup_policy},
+    {
+        "query_backup_policy",
+        "query subsistent backup policy and last backup infos",
+        "<-p|--policy_name p1,p2> [-b|--backup_info_cnt cnt]",
+        query_backup_policy,
+    },
+    {
+        "modify_backup_policy",
+        "modify the backup policy",
+        "<-p|--policy_name p1> [-a|--add_app 1,2...] [-r|--remove_app 1,2...] "
+        "[-i|--backup_interval_seconds sec] [-c|--backup_history_count cnt] "
+        "[-s|--start_time hour:minute]",
+        modify_backup_policy,
+    },
+    {
+        "disable_backup_policy",
+        "stop policy continue backup",
+        "<-p|--policy_name p1>",
+        disable_backup_policy,
+    },
+    {
+        "enable_backup_policy",
+        "start backup policy to backup again",
+        "<-p|--policy_name p1>",
+        enable_backup_policy,
+    },
+    {
+        "restore_app",
+        "restore app from backup media",
+        "<-c|--old_cluster_name name> <-p|--old_policy_name name> <-a|--old_app_name name> "
+        "<-i|--old_app_id id> <-t|--timestamp/backup_id timestamp> "
+        "<-b|--backup_provider_type provider> [-n|--new_app_name name] [-s|--skip_bad_partition] ",
+        restore,
+    },
+    {
+        "query_restore_status",
+        "query restore status",
+        "<restore_app_id> [-d|--detailed]",
+        query_restore_status,
     },
     {
         "exit", "exit shell", "", exit_shell,

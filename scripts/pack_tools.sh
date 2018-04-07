@@ -1,34 +1,6 @@
 #!/bin/bash
 
-function get_boost_lib()
-{
-    libname=`ldd ./DSN_ROOT/bin/pegasus_shell/pegasus_shell 2>/dev/null | grep boost_$2`
-    libname=`echo $libname | cut -f1 -d" "`
-    if [ $1 = "true" ]; then
-        echo $BOOST_DIR/lib/$libname
-    else
-        echo `ldconfig -p|grep $libname|awk '{print $NF}'`
-    fi
-}
-
-function get_stdcpp_lib()
-{
-    libname=`ldd ./DSN_ROOT/bin/pegasus_shell/pegasus_shell 2>/dev/null | grep libstdc++`
-    libname=`echo $libname | cut -f1 -d" "`
-    if [ $1 = "true" ]; then
-        gcc_path=`which gcc`
-        echo `dirname $gcc_path`/../lib64/$libname
-    else
-        echo `ldconfig -p|grep $libname|awk '{print $NF}'`
-    fi
-}
-
-function get_lib()
-{
-    libname=`ldd ./DSN_ROOT/bin/pegasus_shell/pegasus_shell 2>/dev/null | grep $1`
-    libname=`echo $libname | cut -f1 -d" "`
-    echo `ldconfig -p | grep $libname | head -n 1 | awk '{print $NF}'`
-}
+source $(dirname $0)/pack_common.sh
 
 function usage()
 {
@@ -114,35 +86,44 @@ while [[ $# > 0 ]]; do
     shift
 done
 
-mkdir -p ${pack}/DSN_ROOT
-cp -v -r ./DSN_ROOT/* ${pack}/DSN_ROOT
+mkdir -p ${pack}
 cp -v ./run.sh ${pack}/
 
+mkdir -p ${pack}/DSN_ROOT/bin
+cp -v -r ./DSN_ROOT/bin/pegasus_server ${pack}/DSN_ROOT/bin/
+cp -v -r ./DSN_ROOT/bin/pegasus_shell ${pack}/DSN_ROOT/bin/
+cp -v -r ./DSN_ROOT/bin/pegasus_bench ${pack}/DSN_ROOT/bin/
+cp -v -r ./DSN_ROOT/bin/pegasus_kill_test ${pack}/DSN_ROOT/bin/
+cp -v -r ./DSN_ROOT/bin/pegasus_rproxy ${pack}/DSN_ROOT/bin/
+cp -v -r ./DSN_ROOT/bin/pegasus_pressureclient ${pack}/DSN_ROOT/bin/
+
+mkdir -p ${pack}/DSN_ROOT/lib
+cp -v -r ./DSN_ROOT/lib/*.so* ${pack}/DSN_ROOT/lib/
+cp -v ./rdsn/thirdparty/output/lib/libPoco*.so.48 ${pack}/DSN_ROOT/lib/
 cp -v `get_boost_lib $custom_boost_lib system` ${pack}/DSN_ROOT/lib/
 cp -v `get_boost_lib $custom_boost_lib filesystem` ${pack}/DSN_ROOT/lib/
 cp -v `get_stdcpp_lib $custom_gcc` ${pack}/DSN_ROOT/lib/
-cp -v `get_lib libreadline.so` ${pack}/DSN_ROOT/lib/
-cp -v `get_lib libbz2.so` ${pack}/DSN_ROOT/lib/
-cp -v `get_lib libz.so` ${pack}/DSN_ROOT/lib/
-cp -v `get_lib libsnappy.so` ${pack}/DSN_ROOT/lib/
-cp -v `get_lib libaio.so` ${pack}/DSN_ROOT/lib/
+cp -v `get_system_lib shell readline` ${pack}/DSN_ROOT/lib/
+cp -v `get_system_lib shell snappy` ${pack}/DSN_ROOT/lib/
+cp -v `get_system_lib shell crypto` ${pack}/DSN_ROOT/lib/
+cp -v `get_system_lib shell ssl` ${pack}/DSN_ROOT/lib/
+cp -v `get_system_lib shell aio` ${pack}/DSN_ROOT/lib/
+cp -v `get_system_lib shell bz2` ${pack}/DSN_ROOT/lib/
 
 mkdir -p ${pack}/scripts
-cp -v ./scripts/pegasus_kill_test.sh ${pack}/scripts/
-cp -v ./scripts/*_zk.sh ${pack}/scripts/
-cp -v ./scripts/scp-no-interactive ${pack}/scripts/
-cp -v ./rdsn/scripts/linux/learn_stat.py ${pack}/scripts/
+cp -v ./scripts/* ${pack}/scripts/
+chmod +x ${pack}/scripts/*.sh
 
 mkdir -p ${pack}/src/server
-cp -v ./src/server/config-server.ini ${pack}/src/server/
+cp -v ./src/server/*.ini ${pack}/src/server/
 
 mkdir -p ${pack}/src/shell
-cp -v ./src/shell/config.ini ${pack}/src/shell/
+cp -v ./src/shell/*.ini ${pack}/src/shell/
 
 mkdir -p ${pack}/src/test/kill_test
-cp -v ./src/test/kill_test/config.ini ${pack}/src/test/kill_test/
+cp -v ./src/test/kill_test/*.ini ${pack}/src/test/kill_test/
 
-cp -v ./src/config-bench.ini ${pack}/src/
+cp -v ./src/*.ini ${pack}/src/
 
 echo "Pegasus Tools $version ($commit_id) $platform $build_type" >${pack}/VERSION
 

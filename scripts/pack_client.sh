@@ -1,27 +1,6 @@
 #!/bin/bash
 
-function get_boost_lib()
-{
-    libname=`ldd ./DSN_ROOT/bin/pegasus_server/pegasus_server 2>/dev/null | grep boost_$2`
-    libname=`echo $libname | cut -f1 -d" "`
-    if [ $1 = "true" ]; then
-        echo $BOOST_DIR/lib/$libname
-    else
-        echo `ldconfig -p|grep $libname|awk '{print $NF}'`
-    fi
-}
-
-function get_stdcpp_lib()
-{
-    libname=`ldd ./DSN_ROOT/bin/pegasus_server/pegasus_server 2>/dev/null | grep libstdc++`
-    libname=`echo $libname | cut -f1 -d" "`
-    if [ $1 = "true" ]; then
-        gcc_path=`which gcc`
-        echo `dirname $gcc_path`/../lib64/$libname
-    else
-        echo `ldconfig -p|grep $libname|awk '{print $NF}'`
-    fi
-}
+source $(dirname $0)/pack_common.sh
 
 function usage()
 {
@@ -108,12 +87,12 @@ while [[ $# > 0 ]]; do
 done
 
 mkdir -p ${pack}/lib
-cp -v ./DSN_ROOT/lib/libdsn.core.so ${pack}/lib
-cp -v ./DSN_ROOT/lib/libpegasus.clientlib.so ${pack}/lib
-cp -v ./DSN_ROOT/lib/libthrift.so.* ${pack}/lib
+cp -v ./DSN_ROOT/lib/libpegasus_client_static.a ${pack}/lib
+cp -v ./DSN_ROOT/lib/libpegasus_client_shared.so ${pack}/lib
 cp -v `get_boost_lib $custom_boost_lib system` ${pack}/lib
+ln -sf `ls ${pack}/lib | grep libboost_system` ${pack}/lib/libboost_system.so
 cp -v `get_boost_lib $custom_boost_lib filesystem` ${pack}/lib
-cp -v `get_stdcpp_lib $custom_gcc` ${pack}/lib
+ln -sf `ls ${pack}/lib | grep libboost_filesystem` ${pack}/lib/libboost_filesystem.so
 cp -v -r ./src/include ${pack}
 cp -v -r ./src/sample ${pack}
 

@@ -18,11 +18,6 @@
 
 #include "global_env.h"
 
-#ifdef __TITLE__
-#undef __TITLE__
-#endif
-#define __TITLE__ "function.test.recovery"
-
 using namespace dsn::replication;
 
 class recovery_test : public testing::Test
@@ -165,7 +160,7 @@ public:
         snprintf(command,
                  512,
                  "cd %s && sed -i \"/^recover_from_replica_server/c recover_from_replica_server = "
-                 "true\" config-server.ini",
+                 "true\" onebox/meta1/config.ini",
                  global_env::instance()._pegasus_root.c_str());
         system(command);
     }
@@ -175,9 +170,8 @@ public:
         char command[512];
         snprintf(command,
                  512,
-                 "cd %s/onebox/replica%d/data/replica%d/reps && rm -rf %d.%d.pegasus",
+                 "cd %s/onebox/replica%d/data/replica/reps && rm -rf %d.%d.pegasus",
                  global_env::instance()._pegasus_root.c_str(),
-                 replica_id,
                  replica_id,
                  app_id,
                  partition_id);
@@ -190,9 +184,8 @@ public:
         char command[512];
         snprintf(command,
                  512,
-                 "cd %s/onebox/replica%d/data/replica%d/reps && rm -rf %d.*.pegasus",
+                 "cd %s/onebox/replica%d/data/replica/reps && rm -rf %d.*.pegasus",
                  global_env::instance()._pegasus_root.c_str(),
-                 replica_id,
                  replica_id,
                  app_id);
         std::cout << command << std::endl;

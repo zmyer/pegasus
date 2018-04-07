@@ -7,18 +7,13 @@
 #include <string>
 #include <stdint.h>
 
-#include <dsn/cpp/auto_codes.h>
+#include <dsn/tool-api/auto_codes.h>
 #include <dsn/cpp/serialization_helper/dsn.layer2_types.h>
 #include <rrdb/rrdb.code.definition.h>
 #include <rrdb/rrdb.types.h>
 #include <pegasus/error.h>
 #include <pegasus_utils.h>
 #include "pegasus_client_impl.h"
-
-#ifdef __TITLE__
-#undef __TITLE__
-#endif
-#define __TITLE__ "pegasus.client.impl"
 
 using namespace ::dsn;
 
@@ -122,7 +117,6 @@ void pegasus_client_impl::async_set(const std::string &hash_key,
         ::dsn::error_code err, dsn_message_t req, dsn_message_t resp)
     {
         if (user_callback == nullptr) {
-            err.end_tracking();
             return;
         }
         internal_info info;
@@ -135,7 +129,7 @@ void pegasus_client_impl::async_set(const std::string &hash_key,
             info.server = response.server;
         }
         auto ret = get_client_error(
-            (err == ::dsn::ERR_OK) ? get_rocksdb_server_error(response.error) : err.get());
+            (err == ::dsn::ERR_OK) ? get_rocksdb_server_error(response.error) : int(err));
         user_callback(ret, std::move(info));
     };
     _client->put(req,
@@ -212,7 +206,6 @@ void pegasus_client_impl::async_multi_set(const std::string &hash_key,
         ::dsn::error_code err, dsn_message_t req, dsn_message_t resp)
     {
         if (user_callback == nullptr) {
-            err.end_tracking();
             return;
         }
         internal_info info;
@@ -225,7 +218,7 @@ void pegasus_client_impl::async_multi_set(const std::string &hash_key,
             info.server = response.server;
         }
         auto ret = get_client_error(
-            (err == ::dsn::ERR_OK) ? get_rocksdb_server_error(response.error) : err.get());
+            (err == ::dsn::ERR_OK) ? get_rocksdb_server_error(response.error) : int(err));
         user_callback(ret, std::move(info));
     };
     _client->multi_put(req,
@@ -275,7 +268,6 @@ void pegasus_client_impl::async_get(const std::string &hash_key,
         ::dsn::error_code err, dsn_message_t req, dsn_message_t resp)
     {
         if (user_callback == nullptr) {
-            err.end_tracking();
             return;
         }
         std::string value;
@@ -291,7 +283,7 @@ void pegasus_client_impl::async_get(const std::string &hash_key,
             info.server = response.server;
         }
         int ret =
-            get_client_error(err == ERR_OK ? get_rocksdb_server_error(response.error) : err.get());
+            get_client_error(err == ERR_OK ? get_rocksdb_server_error(response.error) : int(err));
         user_callback(ret, std::move(value), std::move(info));
     };
     _client->get(req,
@@ -338,7 +330,7 @@ void pegasus_client_impl::async_multi_get(const std::string &hash_key,
 {
     // check params
     if (hash_key.size() == 0) {
-        derror("invalid hash key: hash key should not be empty for multi_get");
+        derror("invalid hash key: hash key should not be empty");
         if (callback != nullptr)
             callback(PERR_INVALID_HASH_KEY, std::map<std::string, std::string>(), internal_info());
         return;
@@ -355,10 +347,11 @@ void pegasus_client_impl::async_multi_get(const std::string &hash_key,
     req.hash_key = ::dsn::blob(hash_key.data(), 0, hash_key.size());
     req.max_kv_count = max_fetch_count;
     req.max_kv_size = max_fetch_size;
+    req.start_inclusive = true;
+    req.stop_inclusive = false;
     for (auto &sort_key : sort_keys) {
         req.sort_keys.emplace_back(sort_key.data(), 0, sort_key.size());
     }
-    req.no_value = false;
     ::dsn::blob tmp_key;
     pegasus_generate_key(tmp_key, req.hash_key, ::dsn::blob());
     auto partition_hash = pegasus_key_hash(tmp_key);
@@ -366,7 +359,6 @@ void pegasus_client_impl::async_multi_get(const std::string &hash_key,
         ::dsn::error_code err, dsn_message_t req, dsn_message_t resp)
     {
         if (user_callback == nullptr) {
-            err.end_tracking();
             return;
         }
         std::map<std::string, std::string> values;
@@ -382,7 +374,108 @@ void pegasus_client_impl::async_multi_get(const std::string &hash_key,
                                std::string(kv.value.data(), kv.value.length()));
         }
         int ret =
-            get_client_error(err == ERR_OK ? get_rocksdb_server_error(response.error) : err.get());
+            get_client_error(err == ERR_OK ? get_rocksdb_server_error(response.error) : int(err));
+        user_callback(ret, std::move(values), std::move(info));
+    };
+    _client->multi_get(req,
+                       std::move(new_callback),
+                       std::chrono::milliseconds(timeout_milliseconds),
+                       0,
+                       partition_hash);
+}
+
+int pegasus_client_impl::multi_get(const std::string &hash_key,
+                                   const std::string &start_sortkey,
+                                   const std::string &stop_sortkey,
+                                   const multi_get_options &options,
+                                   std::map<std::string, std::string> &values,
+                                   int max_fetch_count,
+                                   int max_fetch_size,
+                                   int timeout_milliseconds,
+                                   internal_info *info)
+{
+    ::dsn::utils::notify_event op_completed;
+    int ret = -1;
+    auto callback =
+        [&](int err, std::map<std::string, std::string> &&_values, internal_info &&_info) {
+            ret = err;
+            if (info != nullptr)
+                (*info) = std::move(_info);
+            values = std::move(_values);
+            op_completed.notify();
+        };
+    async_multi_get(hash_key,
+                    start_sortkey,
+                    stop_sortkey,
+                    options,
+                    std::move(callback),
+                    max_fetch_count,
+                    max_fetch_size,
+                    timeout_milliseconds);
+    op_completed.wait();
+    return ret;
+}
+
+void pegasus_client_impl::async_multi_get(const std::string &hash_key,
+                                          const std::string &start_sortkey,
+                                          const std::string &stop_sortkey,
+                                          const multi_get_options &options,
+                                          async_multi_get_callback_t &&callback,
+                                          int max_fetch_count,
+                                          int max_fetch_size,
+                                          int timeout_milliseconds)
+{
+    // check params
+    if (hash_key.size() == 0) {
+        derror("invalid hash key: hash key should not be empty");
+        if (callback != nullptr)
+            callback(PERR_INVALID_HASH_KEY, std::map<std::string, std::string>(), internal_info());
+        return;
+    }
+    if (hash_key.size() >= UINT16_MAX) {
+        derror("invalid hash key: hash key length should be less than UINT16_MAX, but %d",
+               (int)hash_key.size());
+        if (callback != nullptr)
+            callback(PERR_INVALID_HASH_KEY, std::map<std::string, std::string>(), internal_info());
+        return;
+    }
+
+    ::dsn::apps::multi_get_request req;
+    req.hash_key = ::dsn::blob(hash_key.data(), 0, hash_key.size());
+    req.start_sortkey = ::dsn::blob(start_sortkey.data(), 0, start_sortkey.size());
+    req.stop_sortkey = ::dsn::blob(stop_sortkey.data(), 0, stop_sortkey.size());
+    req.start_inclusive = options.start_inclusive;
+    req.stop_inclusive = options.stop_inclusive;
+    req.max_kv_count = max_fetch_count;
+    req.max_kv_size = max_fetch_size;
+    req.no_value = options.no_value;
+    req.reverse = options.reverse;
+    req.sort_key_filter_type = (dsn::apps::filter_type::type)options.sort_key_filter_type;
+    req.sort_key_filter_pattern = ::dsn::blob(
+        options.sort_key_filter_pattern.data(), 0, options.sort_key_filter_pattern.size());
+    ::dsn::blob tmp_key;
+    pegasus_generate_key(tmp_key, req.hash_key, ::dsn::blob());
+    auto partition_hash = pegasus_key_hash(tmp_key);
+    auto new_callback = [user_callback = std::move(callback)](
+        ::dsn::error_code err, dsn_message_t req, dsn_message_t resp)
+    {
+        if (user_callback == nullptr) {
+            return;
+        }
+        std::map<std::string, std::string> values;
+        internal_info info;
+        ::dsn::apps::multi_get_response response;
+        if (err == ::dsn::ERR_OK) {
+            ::unmarshall(resp, response);
+            info.app_id = response.app_id;
+            info.partition_index = response.partition_index;
+            info.server = response.server;
+            for (auto &kv : response.kvs)
+                values.emplace(std::string(kv.key.data(), kv.key.length()),
+                               std::string(kv.value.data(), kv.value.length()));
+        }
+        int ret =
+            get_client_error(err == ERR_OK ? get_rocksdb_server_error(response.error) : int(err));
         user_callback(ret, std::move(values), std::move(info));
     };
     _client->multi_get(req,
@@ -447,7 +540,6 @@ void pegasus_client_impl::async_multi_get_sortkeys(const std::string &hash_key,
         ::dsn::error_code err, dsn_message_t req, dsn_message_t resp)
     {
         if (user_callback == nullptr) {
-            err.end_tracking();
             return;
         }
         std::set<std::string> sort_keys;
@@ -462,7 +554,7 @@ void pegasus_client_impl::async_multi_get_sortkeys(const std::string &hash_key,
                 sort_keys.insert(std::string(kv.key.data(), kv.key.length()));
         }
         int ret =
-            get_client_error(err == ERR_OK ? get_rocksdb_server_error(response.error) : err.get());
+            get_client_error(err == ERR_OK ? get_rocksdb_server_error(response.error) : int(err));
         user_callback(ret, std::move(sort_keys), std::move(info));
     };
     _client->multi_get(req,
@@ -520,7 +612,7 @@ int pegasus_client_impl::sortkey_count(const std::string &hash_key,
         }
     }
     return get_client_error(pr.first == ERR_OK ? get_rocksdb_server_error(pr.second.error)
-                                               : pr.first.get());
+                                               : int(pr.first));
 }
 
 int pegasus_client_impl::del(const std::string &hash_key,
@@ -563,7 +655,6 @@ void pegasus_client_impl::async_del(const std::string &hash_key,
         ::dsn::error_code err, dsn_message_t req, dsn_message_t resp)
     {
         if (user_callback == nullptr) {
-            err.end_tracking();
             return;
         }
         ::dsn::apps::update_response response;
@@ -576,7 +667,7 @@ void pegasus_client_impl::async_del(const std::string &hash_key,
             info.server = response.server;
         }
         int ret =
-            get_client_error(err == ERR_OK ? get_rocksdb_server_error(response.error) : err.get());
+            get_client_error(err == ERR_OK ? get_rocksdb_server_error(response.error) : int(err));
         user_callback(ret, std::move(info));
     };
     _client->remove(req,
@@ -646,7 +737,6 @@ void pegasus_client_impl::async_multi_del(const std::string &hash_key,
         ::dsn::error_code err, dsn_message_t req, dsn_message_t resp)
     {
         if (user_callback == nullptr) {
-            err.end_tracking();
             return;
         }
         ::dsn::apps::multi_remove_response response;
@@ -661,7 +751,7 @@ void pegasus_client_impl::async_multi_del(const std::string &hash_key,
             deleted_count = response.count;
         }
         int ret =
-            get_client_error(err == ERR_OK ? get_rocksdb_server_error(response.error) : err.get());
+            get_client_error(err == ERR_OK ? get_rocksdb_server_error(response.error) : int(err));
         user_callback(ret, deleted_count, std::move(info));
     };
     _client->multi_remove(req,
@@ -705,7 +795,7 @@ int pegasus_client_impl::ttl(const std::string &hash_key,
         }
     }
     return get_client_error(pr.first == ERR_OK ? get_rocksdb_server_error(pr.second.error)
-                                               : pr.first.get());
+                                               : int(pr.first));
 }
 
 void pegasus_client_impl::async_get_scanner(const std::string &hash_key,
@@ -741,6 +831,8 @@ int pegasus_client_impl::get_scanner(const std::string &hash_key,
     ::dsn::blob start;
     ::dsn::blob stop;
     scan_options o(options);
+
+    // generate key range by start_sort_key and stop_sort_key
     pegasus_generate_key(start, hash_key, start_sort_key);
     if (stop_sort_key.empty()) {
         pegasus_generate_next_blob(stop, hash_key);
@@ -749,12 +841,28 @@ int pegasus_client_impl::get_scanner(const std::string &hash_key,
         pegasus_generate_key(stop, hash_key, stop_sort_key);
     }
 
+    // limit key range by prefix filter
+    if (o.sort_key_filter_type == filter_type::FT_MATCH_PREFIX &&
+        o.sort_key_filter_pattern.length() > 0) {
+        ::dsn::blob prefix_start, prefix_stop;
+        pegasus_generate_key(prefix_start, hash_key, o.sort_key_filter_pattern);
+        pegasus_generate_next_blob(prefix_stop, hash_key, o.sort_key_filter_pattern);
+
+        if (::pegasus::utils::binary_compare(prefix_start, start) > 0) {
+            start = std::move(prefix_start);
+            o.start_inclusive = true;
+        }
+
+        if (::pegasus::utils::binary_compare(prefix_stop, stop) <= 0) {
+            stop = std::move(prefix_stop);
+            o.stop_inclusive = false;
+        }
+    }
+
+    // check if range is empty
     std::vector<uint64_t> v;
-    int cmp = memcmp(start.data(), stop.data(), std::min(start.length(), stop.length()));
-    if (cmp < 0 || (cmp == 0 && start.length() < stop.length()) || // start < stop
-        (cmp == 0 && start.length() == stop.length() && o.start_inclusive &&
-         o.stop_inclusive)) // start == end and bounds are inclusive
-    {
+    int c = ::pegasus::utils::binary_compare(start, stop);
+    if (c < 0 || (c == 0 && o.start_inclusive && o.stop_inclusive)) {
         v.push_back(pegasus_key_hash(start));
     }
     scanner = new pegasus_scanner_impl(_client, std::move(v), o, start, stop);
@@ -796,21 +904,16 @@ void pegasus_client_impl::async_get_unordered_scanners(
                 int size = count / split;
                 int more = count - size * split;
 
-                // use default value for other fields in scan_options
-                scan_options opt;
-                opt.timeout_ms = options.timeout_ms;
-                opt.batch_size = options.batch_size;
-                opt.snapshot = options.snapshot;
                 for (int i = 0; i < split; i++) {
                     int s = size + (i < more);
                     std::vector<uint64_t> hash(s);
                     for (int j = 0; j < s; j++)
                         hash[j] = --count;
-                    scanners[i] = new pegasus_scanner_impl(_client, std::move(hash), opt);
+                    scanners[i] = new pegasus_scanner_impl(_client, std::move(hash), options);
                 }
             }
         }
-        int ret = get_client_error(err == ERR_OK ? response.err.get() : err.get());
+        int ret = get_client_error(err == ERR_OK ? int(response.err) : int(err));
         user_callback(ret, std::move(scanners));
     };
 

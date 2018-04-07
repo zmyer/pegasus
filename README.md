@@ -1,16 +1,14 @@
-Pegasus
-
 ![docs/media-img/pegasus-logo.png](docs/media-img/pegasus-logo.png)
 
-============
+[**中文Wiki**](https://github.com/xiaomi/pegasus/wiki), [**slack channel**](https://join.slack.com/t/pegasus-kv/shared_invite/enQtMjcyMjQzOTk4Njk1LWVkMjlkMGE5Mzg1Y2M3MDc0NGYyYzQ5YzYyMGE0ZjlhMDMyNjU1ZGViYzdjZmUwNjVmNGE0ZDdkMWJiN2Q1MDY)
+
+## What is Pegasus?
 
 Pegasus is a distributed key-value storage system developed and maintained by Xiaomi Cloud Storage Team, with targets of
 high availability, high performance, strong consistency and ease of use. The original motivation of this project is to replace
 [Apache HBase](https://hbase.apache.org/) for users who only need simple key-value schema but require low latency and high availability.
 It is based on the open source [rDSN](https://github.com/Microsoft/rDSN) framework, and uses modified [RocksDB](https://github.com/facebook/rocksdb) as underlying storage engine.
 The consensus algorithm it uses is [PacificA](https://www.microsoft.com/en-us/research/publication/pacifica-replication-in-log-based-distributed-storage-systems/).
-
-[**中文Wiki**](https://github.com/xiaomi/pegasus/wiki)
 
 ## Features
 
@@ -66,10 +64,24 @@ The following diagram shows the data model of Pegasus:
 
 You may want to refer to the [installation guide](docs/installation.md).
 
+## Related Projects
+
+Client libs:
+* [Pegasus Java client](https://github.com/xiaomi/pegasus-java-client)
+* [Pegasus Python Client](https://github.com/xiaomi/pegasus-python-client)
+* [Pegasus Go Client](https://github.com/xiaomi/pegasus-go-client)
+* [Pegasus Node.js Client](https://github.com/xiaomi/pegasus-nodejs-client)
+* [Pegasus Scala Client](https://github.com/xiaomi/pegasus-scala-client)
+
+Test tools:
+* [Pegasus YCSB](https://github.com/xiaomi/pegasus-YCSB)
+
 ## How to contibute
 
 We open source this project because we known that the system is far from mature and needs lots of
 improvement. So we are looking forward to your [contribution](docs/contribution.md).
+
+If you have more questions, please join our [slack channel](https://join.slack.com/t/pegasus-kv/shared_invite/enQtMjcyMjQzOTk4Njk1LWVkMjlkMGE5Mzg1Y2M3MDc0NGYyYzQ5YzYyMGE0ZjlhMDMyNjU1ZGViYzdjZmUwNjVmNGE0ZDdkMWJiN2Q1MDY).
 
 ## License
 

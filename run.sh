@@ -1,9 +1,11 @@
 #!/bin/bash
 
 ROOT=`pwd`
+LOCAL_IP=`scripts/get_local_ip`
 export REPORT_DIR="$ROOT/test_report"
 export DSN_ROOT=$ROOT/DSN_ROOT
-export LD_LIBRARY_PATH=$DSN_ROOT/lib:$BOOST_DIR/lib:$TOOLCHAIN_DIR/lib64:$LD_LIBRARY_PATH
+export DSN_THIRDPARTY_ROOT=$ROOT/rdsn/thirdparty/output
+export LD_LIBRARY_PATH=$DSN_ROOT/lib:$DSN_THIRDPARTY_ROOT/lib:$BOOST_DIR/lib:$TOOLCHAIN_DIR/lib64:$LD_LIBRARY_PATH
 
 function usage()
 {
@@ -34,6 +36,7 @@ function usage()
     echo "   bench                     run benchmark test"
     echo "   shell                     run pegasus shell"
     echo "   migrate_node              migrate primary replicas out of specified node"
+    echo "   downgrade_node            downgrade replicas to inactive on specified node"
     echo
     echo "   test                      run unit test"
     echo
@@ -52,8 +55,7 @@ function usage_build()
 {
     echo "Options for subcommand 'build':"
     echo "   -h|--help         print the help info"
-    echo "   -t|--type         build type: debug|release, default is debug"
-    echo "   -g|--git          git source of ext module: github|xiaomi, default is xiaomi"
+    echo "   -t|--type         build type: debug|release, default is release"
     echo "   -s|--serialize    serialize type: dsn|thrift|proto, default is thrift"
     echo "   -c|--clear        clear the environment before building"
     echo "   -cc|--half-clear  only clear the environment of replication before building"
@@ -67,8 +69,7 @@ function usage_build()
 }
 function run_build()
 {
-    BUILD_TYPE="debug"
-    GIT_SOURCE="xiaomi"
+    BUILD_TYPE="release"
     CLEAR=NO
     PART_CLEAR=NO
     JOB_NUM=8
@@ -86,10 +87,6 @@ function run_build()
                 ;;
             -t|--type)
                 BUILD_TYPE="$2"
-                shift
-                ;;
-            -g|--git)
-                GIT_SOURCE="$2"
                 shift
                 ;;
             -c|--clear)
@@ -143,7 +140,7 @@ function run_build()
 
     echo "INFO: start build rdsn..."
     cd $ROOT/rdsn
-    OPT="-t $BUILD_TYPE -g $GIT_SOURCE -j $JOB_NUM"
+    OPT="-t $BUILD_TYPE -j $JOB_NUM"
     if [ "$BOOST_DIR" != "" ]; then
         OPT="$OPT -b $BOOST_DIR"
     fi
@@ -165,6 +162,9 @@ function run_build()
         echo "ERROR: build pegasus failed"
         exit -1
     fi
+
+    cd $ROOT
+    chmod +x scripts/*.sh
 }
 
 #####################
@@ -210,13 +210,17 @@ function run_test()
     fi
 
     ./run.sh clear_onebox #clear the onebox before test
-    ./run.sh start_onebox -p 4
-    echo "sleep 20 to wait for the onebox to start all partitions ..."
-    sleep 20
+    ./run.sh start_onebox 
+    echo "sleep 30 to wait for the onebox to start all partitions ..."
+    sleep 30
 
     for module in `echo $test_modules`; do
         pushd $ROOT/src/builder/bin/$module
         REPORT_DIR=$REPORT_DIR ./run.sh
+        if [ $? != 0 ]; then
+            echo "run test \"$module\" in `pwd` failed"
+            exit
+        fi
         popd
     done
 
@@ -239,6 +243,19 @@ function usage_start_zk()
 }
 function run_start_zk()
 {
+    # first we check the environment that zk need: java and nc command
+    # check java
+    java -help 1>/dev/null 2>/dev/null
+    if [ $? != 0 ]; then
+        echo "start zk failed, need install jre..."
+        exit
+    fi
+    # check nc command
+    nc -help 1>/dev/null 2>/dev/null
+    if [ $? != 0 ]; then
+        echo "start zk failed, need install netcat command..."
+        exit
+    fi
     INSTALL_DIR=`pwd`/.zk_install
     PORT=22181
     while [[ $# > 0 ]]; do
@@ -357,6 +374,10 @@ function usage_start_onebox()
     echo "                     default app name, default is temp"
     echo "   -p|--partition_count <num>"
     echo "                     default app partition count, default is 8"
+    echo "   -s|--server_path <str>"
+    echo "                     server binary path, default is ${DSN_ROOT}/bin/pegasus_server"
+    echo "   --use_product_config"
+    echo "                     use the product config template: ./src/server/config.ini"
 }
 
 function run_start_onebox()
@@ -365,6 +386,8 @@ function run_start_onebox()
     REPLICA_COUNT=3
     APP_NAME=temp
     PARTITION_COUNT=8
+    SERVER_PATH=${DSN_ROOT}/bin/pegasus_server
+    USE_PRODUCT_CONFIG=false
     while [[ $# > 0 ]]; do
         key="$1"
         case $key in
@@ -388,6 +411,14 @@ function run_start_onebox()
                 PARTITION_COUNT="$2"
                 shift
                 ;;
+            -s|--server_path)
+                SERVER_PATH="$2"
+                shift
+                ;;
+            --use_product_config)
+                USE_PRODUCT_CONFIG=true
+                shift
+                ;;
             *)
                 echo "ERROR: unknown option \"$key\""
                 echo
@@ -397,43 +428,75 @@ function run_start_onebox()
         esac
         shift
     done
-    if [ ! -f ${DSN_ROOT}/bin/pegasus_server/pegasus_server ]; then
-        echo "ERROR: file ${DSN_ROOT}/bin/pegasus_server/pegasus_server not exist"
+    if [ ! -f ${SERVER_PATH}/pegasus_server ]; then
+        echo "ERROR: file ${SERVER_PATH}/pegasus_server not exist"
         exit -1
     fi
-    if ps -ef | grep ' \./pegasus_server config.ini' | grep -E 'app_list meta@|app_list replica@'; then
+    if ps -ef | grep ' /pegasus_server config.ini' | grep -E 'app_list meta|app_list replica'; then
         echo "ERROR: some onebox processes are running, start failed"
         exit -1
     fi
-    ln -s -f ${DSN_ROOT}/bin/pegasus_server/pegasus_server
+    ln -s -f ${SERVER_PATH}/pegasus_server
     run_start_zk
-    sed "s/@LOCAL_IP@/`hostname -i`/g;s/@META_COUNT@/${META_COUNT}/g;s/@REPLICA_COUNT@/${REPLICA_COUNT}/g;s/@APP_NAME@/${APP_NAME}/g;s/@PARTITION_COUNT@/${PARTITION_COUNT}/g" \
-        ${ROOT}/src/server/config-server.ini >${ROOT}/config-server.ini
+
+    if [ $USE_PRODUCT_CONFIG == "true" ]; then
+      cp -f ${ROOT}/src/server/config.ini ${ROOT}/config-server.ini
+      sed -i 's/\<34601\>/@META_PORT@/' ${ROOT}/config-server.ini
+      sed -i 's/\<34801\>/@REPLICA_PORT@/' ${ROOT}/config-server.ini
+      sed -i 's/%{cluster.name}/onebox/g' ${ROOT}/config-server.ini
+      sed -i 's/%{network.interface}/eth0/g' ${ROOT}/config-server.ini
+      sed -i 's/%{email.address}//g' ${ROOT}/config-server.ini
+      sed -i 's/%{app.dir}/.\/data/g' ${ROOT}/config-server.ini
+      sed -i 's/%{slog.dir}//g' ${ROOT}/config-server.ini
+      sed -i 's/%{data.dirs}//g' ${ROOT}/config-server.ini
+      sed -i 's@%{home.dir}@'"$HOME"'@g' ${ROOT}/config-server.ini
+      for i in $(seq ${META_COUNT})
+      do
+          meta_port=$((34600+i))
+          if [ $i -eq 1 ]; then
+              meta_list="${LOCAL_IP}:$meta_port"
+          else
+              meta_list="$meta_list,${LOCAL_IP}:$meta_port"
+          fi
+      done
+      sed -i 's/%{meta.server.list}/'"$meta_list"'/g' ${ROOT}/config-server.ini
+      sed -i 's/%{zk.server.list}/'"${LOCAL_IP}"':22181/g' ${ROOT}/config-server.ini
+      sed -i 's/app_name = .*$/app_name = '"$APP_NAME"'/' ${ROOT}/config-server.ini
+      sed -i 's/partition_count = .*$/partition_count = '"$PARTITION_COUNT"'/' ${ROOT}/config-server.ini
+    else
+      sed "s/@LOCAL_IP@/${LOCAL_IP}/g;s/@APP_NAME@/${APP_NAME}/g;s/@PARTITION_COUNT@/${PARTITION_COUNT}/g" \
+          ${ROOT}/src/server/config-server.ini >${ROOT}/config-server.ini
+    fi
+
     echo "starting server"
+    ld_library_path=${SERVER_PATH}:$LD_LIBRARY_PATH
+    export LD_LIBRARY_PATH=$ld_library_path
     mkdir -p onebox
     cd onebox
     for i in $(seq ${META_COUNT})
     do
+        meta_port=$((34600+i))
         mkdir -p meta$i;
         cd meta$i
-        ln -s -f ${DSN_ROOT}/bin/pegasus_server/pegasus_server pegasus_server
-        ln -s -f ${ROOT}/config-server.ini config.ini
-        echo "cd `pwd` && ./pegasus_server config.ini -app_list meta@$i &>result &"
-        ./pegasus_server config.ini -app_list meta@$i &>result &
+        ln -s -f ${SERVER_PATH}/pegasus_server pegasus_server
+        sed "s/@META_PORT@/$meta_port/;s/@REPLICA_PORT@/34800/" ${ROOT}/config-server.ini >config.ini
+        echo "cd `pwd` && ../meta$i/pegasus_server config.ini -app_list meta &>result &"
+        ../meta$i/pegasus_server config.ini -app_list meta &>result &
         PID=$!
-        ps -ef | grep ' \./pegasus_server config.ini' | grep "\<$PID\>"
+        ps -ef | grep '/pegasus_server config.ini' | grep "\<$PID\>"
         cd ..
     done
     for j in $(seq ${REPLICA_COUNT})
     do
+        replica_port=$((34800+j))
         mkdir -p replica$j
         cd replica$j
-        ln -s -f ${DSN_ROOT}/bin/pegasus_server/pegasus_server pegasus_server
-        ln -s -f ${ROOT}/config-server.ini config.ini
-        echo "cd `pwd` && ./pegasus_server config.ini -app_list replica@$j &>result &"
-        ./pegasus_server config.ini -app_list replica@$j &>result &
+        ln -s -f ${SERVER_PATH}/pegasus_server pegasus_server
+        sed "s/@META_PORT@/34600/;s/@REPLICA_PORT@/$replica_port/" ${ROOT}/config-server.ini >config.ini
+        echo "cd `pwd` && ../replica$j/pegasus_server config.ini -app_list replica &>result &"
+        ../replica$j/pegasus_server config.ini -app_list replica &>result &
         PID=$!
-        ps -ef | grep ' \./pegasus_server config.ini' | grep "\<$PID\>"
+        ps -ef | grep '/pegasus_server config.ini' | grep "\<$PID\>"
         cd ..
     done
 }
@@ -465,7 +528,7 @@ function run_stop_onebox()
         esac
         shift
     done
-    ps -ef | grep ' \./pegasus_server config.ini' | grep -E 'app_list meta@|app_list replica@' | awk '{print $2}' | xargs kill &>/dev/null
+    ps -ef | grep '/pegasus_server config.ini' | grep -E 'app_list meta|app_list replica' | awk '{print $2}' | xargs kill &>/dev/null
 }
 
 #####################
@@ -495,7 +558,7 @@ function run_list_onebox()
         esac
         shift
     done
-    ps -ef | grep ' \./pegasus_server config.ini' | grep -E 'app_list meta@|app_list replica@' | sort -k11
+    ps -ef | grep '/pegasus_server config.ini' | grep -E 'app_list meta|app_list replica' | sort -k11
 }
 
 #####################
@@ -585,17 +648,17 @@ function run_start_onebox_instance()
             echo "ERROR: invalid meta_id"
             exit -1
         fi
-        if ps -ef | grep ' \./pegasus_server config.ini' | grep "app_list meta@$META_ID\>" ; then
+        if ps -ef | grep "/meta$META_ID/pegasus_server config.ini" | grep "app_list meta" ; then
             echo "INFO: meta@$META_ID already running"
             exit -1
         fi
         cd $dir
-        echo "cd `pwd` && ./pegasus_server config.ini -app_list meta@$META_ID &>result &"
-        ./pegasus_server config.ini -app_list meta@$META_ID &>result &
+        echo "cd `pwd` && ../meta$META_ID/pegasus_server config.ini -app_list meta &>result &"
+        ../meta$META_ID/pegasus_server config.ini -app_list meta &>result &
         PID=$!
-        ps -ef | grep ' \./pegasus_server config.ini' | grep "\<$PID\>"
+        ps -ef | grep '/pegasus_server config.ini' | grep "\<$PID\>"
         cd ..
-        echo "INFO: meta@$META started"
+        echo "INFO: meta@$META_ID started"
     fi
     if [ $REPLICA_ID != "0" ]; then
         dir=onebox/replica$REPLICA_ID
@@ -603,15 +666,15 @@ function run_start_onebox_instance()
             echo "ERROR: invalid replica_id"
             exit -1
         fi
-        if ps -ef | grep ' \./pegasus_server config.ini' | grep "app_list replica@$REPLICA_ID\>" ; then
+        if ps -ef | grep "/replica$REPLICA_ID/pegasus_server config.ini" | grep "app_list replica" ; then
             echo "INFO: replica@$REPLICA_ID already running"
             exit -1
         fi
         cd $dir
-        echo "cd `pwd` && ./pegasus_server config.ini -app_list replica@$REPLICA_ID &>result &"
-        ./pegasus_server config.ini -app_list replica@$REPLICA_ID &>result &
+        echo "cd `pwd` && ../replica$REPLICA_ID/pegasus_server config.ini -app_list replica &>result &"
+        ../replica$REPLICA_ID/pegasus_server config.ini -app_list replica &>result &
         PID=$!
-        ps -ef | grep ' \./pegasus_server config.ini' | grep "\<$PID\>"
+        ps -ef | grep '/pegasus_server config.ini' | grep "\<$PID\>"
         cd ..
         echo "INFO: replica@$REPLICA_ID started"
     fi
@@ -672,11 +735,11 @@ function run_stop_onebox_instance()
             echo "ERROR: invalid meta_id"
             exit -1
         fi
-        if ! ps -ef | grep ' \./pegasus_server config.ini' | grep "app_list meta@$META_ID\>" ; then
+        if ! ps -ef | grep "/meta$META_ID/pegasus_server config.ini" | grep "app_list meta" ; then
             echo "INFO: meta@$META_ID is not running"
             exit -1
         fi
-        ps -ef | grep ' \./pegasus_server config.ini' | grep "app_list meta@$META_ID\>" | awk '{print $2}' | xargs kill &>/dev/null
+        ps -ef | grep "/meta$META_ID/pegasus_server config.ini" | grep "app_list meta" | awk '{print $2}' | xargs kill &>/dev/null
         echo "INFO: meta@$META_ID stopped"
     fi
     if [ $REPLICA_ID != "0" ]; then
@@ -685,11 +748,11 @@ function run_stop_onebox_instance()
             echo "ERROR: invalid replica_id"
             exit -1
         fi
-        if ! ps -ef | grep ' \./pegasus_server config.ini' | grep "app_list replica@$REPLICA_ID\>" ; then
+        if ! ps -ef | grep "/replica$REPLICA_ID/pegasus_server config.ini" | grep "app_list replica" ; then
             echo "INFO: replica@$REPLICA_ID is not running"
             exit -1
         fi
-        ps -ef | grep ' \./pegasus_server config.ini' | grep "app_list replica@$REPLICA_ID\>" | awk '{print $2}' | xargs kill &>/dev/null
+        ps -ef | grep "/replica$REPLICA_ID/pegasus_server config.ini" | grep "app_list replica" | awk '{print $2}' | xargs kill &>/dev/null
         echo "INFO: replica@$REPLICA_ID stopped"
     fi
 }
@@ -839,13 +902,34 @@ function run_start_kill_test()
 
     cd $ROOT
     CONFIG=config-kill-test.ini
-    sed "s/@LOCAL_IP@/`hostname -i`/g" ${ROOT}/src/test/kill_test/config.ini >$CONFIG
+
+    sed "s/@LOCAL_IP@/${LOCAL_IP}/g;\
+s/@META_COUNT@/${META_COUNT}/g;\
+s/@REPLICA_COUNT@/${REPLICA_COUNT}/g;\
+s/@ZK_COUNT@/1/g;s/@APP_NAME@/${APP_NAME}/g;\
+s/@SET_THREAD_COUNT@/${THREAD_COUNT}/g;\
+s/@GET_THREAD_COUNT@/${THREAD_COUNT}/g;\
+s+@ONEBOX_RUN_PATH@+`pwd`+g" ${ROOT}/src/test/kill_test/config.ini >$CONFIG
+
+    # start verifier
+    mkdir -p onebox/verifier && cd onebox/verifier
     ln -s -f ${DSN_ROOT}/bin/pegasus_kill_test/pegasus_kill_test
-    echo "./pegasus_kill_test $CONFIG &>/dev/null &"
-    ./pegasus_kill_test $CONFIG &>/dev/null &
+    ln -s -f ${ROOT}/$CONFIG config.ini
+    echo "./pegasus_kill_test config.ini verifier &>/dev/null &"
+    ./pegasus_kill_test config.ini verifier &>/dev/null &
     sleep 0.2
     echo
+    cd ${ROOT}
 
+    #start killer
+    mkdir -p onebox/killer && cd onebox/killer
+    ln -s -f ${DSN_ROOT}/bin/pegasus_kill_test/pegasus_kill_test
+    ln -s -f ${ROOT}/$CONFIG config.ini
+    echo "./pegasus_kill_test config.ini killer &>/dev/null &"
+    ./pegasus_kill_test config.ini killer &>/dev/null &
+    sleep 0.2
+    echo
+    cd ${ROOT}
     run_list_kill_test
 }
 
@@ -913,8 +997,6 @@ function run_list_kill_test()
     ps -ef | grep ' \./pegasus_kill_test ' | grep -v grep
     echo "------------------------------"
     echo "Server dir: ./onebox"
-    echo "Client dir: ./pegasus_kill_test.data"
-    echo "Kill   log: ./kill_history.txt"
     echo "------------------------------"
 }
 
@@ -948,6 +1030,236 @@ function run_clear_kill_test()
     run_stop_kill_test
     run_clear_onebox
     rm -rf kill_history.txt *.data config-*.ini &>/dev/null
+}
+
+#####################
+## start_upgrade_test
+#####################
+function usage_start_upgrade_test()
+{
+    echo "Options for subcommand 'start_upgrade_test':"
+    echo "   -h|--help         print the help info"
+    echo "   -m|--meta_count <num>"
+    echo "                     meta server count, default is 3"
+    echo "   -r|--replica_count <num>"
+    echo "                     replica server count, default is 5"
+    echo "   -a|--app_name <str>"
+    echo "                     app name, default is temp"
+    echo "   -p|--partition_count <num>"
+    echo "                     app partition count, default is 16"
+    echo "   --upgrade_type <str>"
+    echo "                     upgrade type: meta | replica | all, default is all"
+    echo "   -o|--old_version_path <str>"
+    echo "                     old server binary and library path"
+    echo "   -n|--new_version_path <str>"
+    echo "                     new server binary and library path"
+    echo "   -s|--sleep_time <num>"
+    echo "                     max sleep time before next update, default is 10"
+    echo "                     actual sleep time will be a random value in range of [1, sleep_time]"
+    echo "   -w|--worker_count <num>"
+    echo "                     worker count for concurrently setting value, default is 10"
+}
+
+function run_start_upgrade_test()
+{
+    META_COUNT=3
+    REPLICA_COUNT=5
+    APP_NAME=temp
+    PARTITION_COUNT=16
+    UPGRADE_TYPE=replica
+    OLD_VERSION_PATH=
+    NEW_VERSION_PATH=
+    SLEEP_TIME=10
+    THREAD_COUNT=10
+    while [[ $# > 0 ]]; do
+        key="$1"
+        case $key in
+            -h|--help)
+                usage_start_upgrade_test
+                exit 0
+                ;;
+            -m|--meta_count)
+                META_COUNT="$2"
+                shift
+                ;;
+            -r|--replica_count)
+                REPLICA_COUNT="$2"
+                shift
+                ;;
+            -a|--app_name)
+                APP_NAME="$2"
+                shift
+                ;;
+            -p|--partition_count)
+                PARTITION_COUNT="$2"
+                shift
+                ;;
+            -t|--upgrade_type)
+                UPGRADE_TYPE="$2"
+                shift
+                ;;
+            -o|--old_version_path)
+                OLD_VERSION_PATH="${ROOT}/$2"
+                shift
+                ;;
+            -n|--new_version_path)
+                NEW_VERSION_PATH="${ROOT}/$2"
+                shift
+                ;;
+            -s|--sleep_time)
+                SLEEP_TIME="$2"
+                shift
+                ;;
+            -w|--worker_count)
+                THREAD_COUNT="$2"
+                shift
+                ;;
+            *)
+                echo "ERROR: unknown option \"$key\""
+                echo
+                usage_start_upgrade_test
+                exit -1
+                ;;
+        esac
+        shift
+    done
+
+    run_start_onebox -m $META_COUNT -r $REPLICA_COUNT -a $APP_NAME -p $PARTITION_COUNT -s $OLD_VERSION_PATH
+    echo
+
+    cd $ROOT
+    CONFIG=config-upgrade-test.ini
+
+    sed "s/@LOCAL_IP@/`hostname -i`/g;\
+s/@META_COUNT@/${META_COUNT}/g;\
+s/@REPLICA_COUNT@/${REPLICA_COUNT}/g;\
+s/@ZK_COUNT@/1/g;s/@APP_NAME@/${APP_NAME}/g;\
+s/@SET_THREAD_COUNT@/${THREAD_COUNT}/g;\
+s/@GET_THREAD_COUNT@/${THREAD_COUNT}/g;\
+s+@ONEBOX_RUN_PATH@+`pwd`+g; \
+s+@OLD_VERSION_PATH@+${OLD_VERSION_PATH}+g;\
+s+@NEW_VERSION_PATH@+${NEW_VERSION_PATH}+g " ${ROOT}/src/test/upgrade_test/config.ini >$CONFIG
+
+    # start verifier
+    mkdir -p onebox/verifier && cd onebox/verifier
+    ln -s -f ${DSN_ROOT}/bin/pegasus_upgrade_test/pegasus_upgrade_test
+    ln -s -f ${ROOT}/$CONFIG config.ini
+    echo "./pegasus_upgrade_test config.ini verifier &>/dev/null &"
+    ./pegasus_upgrade_test config.ini verifier &>/dev/null &
+    sleep 0.2
+    echo
+    cd ${ROOT}
+
+    #start upgrader
+    mkdir -p onebox/upgrader && cd onebox/upgrader
+    ln -s -f ${DSN_ROOT}/bin/pegasus_upgrade_test/pegasus_upgrade_test
+    ln -s -f ${ROOT}/$CONFIG config.ini
+    echo "./pegasus_upgrade_test config.ini upgrader &>/dev/null &"
+    ./pegasus_upgrade_test config.ini upgrader &>/dev/null &
+    sleep 0.2
+    echo
+    cd ${ROOT}
+
+    run_list_upgrade_test
+}
+
+#####################
+## stop_upgrade_test
+#####################
+function usage_stop_upgrade_test()
+{
+    echo "Options for subcommand 'stop_upgrade_test':"
+    echo "   -h|--help         print the help info"
+}
+
+function run_stop_upgrade_test()
+{
+    while [[ $# > 0 ]]; do
+        key="$1"
+        case $key in
+            -h|--help)
+                usage_stop_upgrade_test
+                exit 0
+                ;;
+            *)
+                echo "ERROR: unknown option \"$key\""
+                echo
+                usage_stop_upgrade_test
+                exit -1
+                ;;
+        esac
+        shift
+    done
+
+    ps -ef | grep ' \./pegasus_upgrade_test ' | awk '{print $2}' | xargs kill &>/dev/null
+    run_stop_onebox
+}
+
+#####################
+## list_upgrade_test
+#####################
+function usage_list_upgrade_test()
+{
+    echo "Options for subcommand 'list_upgrade_test':"
+    echo "   -h|--help         print the help info"
+}
+
+function run_list_upgrade_test()
+{
+    while [[ $# > 0 ]]; do
+        key="$1"
+        case $key in
+            -h|--help)
+                usage_list_upgrade_test
+                exit 0
+                ;;
+            *)
+                echo "ERROR: unknown option \"$key\""
+                echo
+                usage_list_upgrade_test
+                exit -1
+                ;;
+        esac
+        shift
+    done
+    echo "------------------------------"
+    run_list_onebox
+    ps -ef | grep ' \./pegasus_upgrade_test ' | grep -v grep
+    echo "------------------------------"
+    echo "Server dir: ./onebox"
+    echo "------------------------------"
+}
+
+#####################
+## clear_upgrade_test
+#####################
+function usage_clear_upgrade_test()
+{
+    echo "Options for subcommand 'clear_upgrade_test':"
+    echo "   -h|--help         print the help info"
+}
+
+function run_clear_upgrade_test()
+{
+    while [[ $# > 0 ]]; do
+        key="$1"
+        case $key in
+            -h|--help)
+                usage_clear_upgrade_test
+                exit 0
+                ;;
+            *)
+                echo "ERROR: unknown option \"$key\""
+                echo
+                usage_clear_upgrade_test
+                exit -1
+                ;;
+        esac
+        shift
+    done
+    run_stop_upgrade_test
+    run_clear_onebox
+    rm -rf upgrade_history.txt *.data config-*.ini &>/dev/null
 }
 
 #####################
@@ -1069,7 +1381,7 @@ function run_shell()
     CONFIG_SPECIFIED=0
     CLUSTER=127.0.0.1:34601,127.0.0.1:34602,127.0.0.1:34603
     CLUSTER_SPECIFIED=0
-    CLUSTER_NAME=mycluster
+    CLUSTER_NAME=onebox
     CLUSTER_NAME_SPECIFIED=0
     while [[ $# > 0 ]]; do
         key="$1"
@@ -1110,6 +1422,10 @@ function run_shell()
         exit -1
     fi
 
+    if [ ${CLUSTER_SPECIFIED} -eq 1 ]; then
+        CLUSTER_NAME="unknown"
+    fi
+
     if [ $CLUSTER_NAME_SPECIFIED -eq 1 ]; then
         meta_section="/tmp/minos.config.cluster.meta.section.$UID"
         pegasus_config_file=$(dirname $MINOS_CONFIG_FILE)/xiaomi-config/conf/pegasus/pegasus-${CLUSTER_NAME}.cfg
@@ -1130,8 +1446,6 @@ function run_shell()
                     OLD_IFS="$IFS"
                     IFS="," && CLUSTER="${meta_list[*]}" && IFS="$OLD_IFS"
                     echo "parse meta_list $CLUSTER from $pegasus_config_file"
-                    # TODO: remove cluster_name from pegasus_shell
-                    CLUSTER_NAME="mycluster"
                 else
                     echo "parse meta_list from $pegasus_config_file failed"
                 fi
@@ -1142,7 +1456,7 @@ function run_shell()
     fi
 
     if [ ${CONFIG_SPECIFIED} -eq 0 ]; then
-        sed "s/@CLUSTER@/$CLUSTER/g" ${ROOT}/src/shell/config.ini >${CONFIG}
+        sed "s/@CLUSTER_NAME@/$CLUSTER_NAME/g;s/@CLUSTER_ADDRESS@/$CLUSTER/g" ${ROOT}/src/shell/config.ini >${CONFIG}
     fi
 
     cd ${ROOT}
@@ -1244,6 +1558,100 @@ function run_migrate_node()
     fi
 }
 
+#####################
+## downgrade_node
+#####################
+function usage_downgrade_node()
+{
+    echo "Options for subcommand 'downgrade_node':"
+    echo "   -h|--help            print the help info"
+    echo "   -c|--cluster <str>   cluster meta lists"
+    echo "   -n|--node <str>      the node to downgrade replicas, should be ip:port"
+    echo "   -a|--app <str>       the app to downgrade replicas, if not set, means downgrade all apps"
+    echo "   -t|--type <str>      type: test or run, default is test"
+}
+
+function run_downgrade_node()
+{
+    CLUSTER=""
+    NODE=""
+    APP="*"
+    TYPE="test"
+    while [[ $# > 0 ]]; do
+        key="$1"
+        case $key in
+            -h|--help)
+                usage_downgrade_node
+                exit 0
+                ;;
+            -c|--cluster)
+                CLUSTER="$2"
+                shift
+                ;;
+            -n|--node)
+                NODE="$2"
+                shift
+                ;;
+            -a|--app)
+                APP="$2"
+                shift
+                ;;
+            -t|--type)
+                TYPE="$2"
+                shift
+                ;;
+            *)
+                echo "ERROR: unknown option \"$key\""
+                echo
+                usage_downgrade_node
+                exit -1
+                ;;
+        esac
+        shift
+    done
+
+    if [ "$CLUSTER" == "" ]; then
+        echo "ERROR: no cluster specified"
+        echo
+        usage_downgrade_node
+        exit -1
+    fi
+
+    if [ "$NODE" == "" ]; then
+        echo "ERROR: no node specified"
+        echo
+        usage_downgrade_node
+        exit -1
+    fi
+
+    if [ "$TYPE" != "test" -a "$TYPE" != "run" ]; then
+        echo "ERROR: invalid type $TYPE"
+        echo
+        usage_downgrade_node
+        exit -1
+    fi
+
+    echo "CLUSTER=$CLUSTER"
+    echo "NODE=$NODE"
+    echo "APP=$APP"
+    echo "TYPE=$TYPE"
+    echo
+    cd ${ROOT}
+    echo "------------------------------"
+    ./scripts/downgrade_node.sh $CLUSTER $NODE "$APP" $TYPE
+    echo "------------------------------"
+    echo
+    if [ "$TYPE" == "test" ]; then
+        echo "The above is sample downgrade commands."
+        echo "Run with option '-t run' to do migration actually."
+    else
+        echo "Done."
+        echo "You can run shell command 'nodes -d' to check the result."
+        echo
+        echo "The cluster's auto migration is disabled now, you can run shell command 'set_meta_level lively' to enable it again."
+    fi
+}
+
 ####################################################################
 
 if [ $# -eq 0 ]; then
@@ -1315,6 +1723,22 @@ case $cmd in
         shift
         run_clear_kill_test $*
         ;;
+    start_upgrade_test)
+        shift
+        run_start_upgrade_test $*
+        ;;
+    stop_upgrade_test)
+        shift
+        run_stop_upgrade_test $*
+        ;;
+    list_upgrade_test)
+        shift
+        run_list_upgrade_test $*
+        ;;
+    clear_upgrade_test)
+        shift
+        run_clear_upgrade_test $*
+        ;;
     bench)
         shift
         run_bench $*
@@ -1326,6 +1750,10 @@ case $cmd in
     migrate_node)
         shift
         run_migrate_node $*
+        ;;
+    downgrade_node)
+        shift
+        run_downgrade_node $*
         ;;
     test)
         shift

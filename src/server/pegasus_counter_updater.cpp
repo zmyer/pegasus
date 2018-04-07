@@ -6,6 +6,8 @@
 #include "pegasus_io_service.h"
 #include <pegasus_utils.h>
 #include <counter_utils.h>
+#include <dsn/tool-api/command_manager.h>
+#include <dsn/cpp/service_app.h>
 #include <iomanip>
 #include <regex>
 
@@ -16,44 +18,35 @@
 #include <fstream>
 #endif
 
-#ifdef __TITLE__
-#undef __TITLE__
-#endif
-#define __TITLE__ "pegasus.counter.updater"
-
 using namespace ::dsn;
 
 namespace pegasus {
 namespace server {
 
-static const char *s_brief_stat_mapper[] = {"write_qps",
-                                            "zion*profiler*RPC_L2_CLIENT_WRITE.qps",
-                                            "PUT_P99(ns)",
-                                            "zion*profiler*RPC_RRDB_RRDB_PUT.latency.server",
-                                            "read_qps",
-                                            "zion*profiler*RPC_L2_CLIENT_READ.qps",
-                                            "GET_P99(ns)",
-                                            "zion*profiler*RPC_RRDB_RRDB_GET.latency.server",
-                                            "replica_count",
-                                            "replica*eon.replica_stub*replica(Count)",
-                                            "commit_throughput",
-                                            "replica*eon.replica_stub*replicas.commit.qps",
-                                            "learning_count",
-                                            "replica*eon.replica_stub*replicas.learning.count",
-                                            "shared_log_size(MB)",
-                                            "replica*eon.replica_stub*shared.log.size(MB)",
-                                            "memused_virt(MB)",
-                                            "replica*server*memused.virt(MB)",
-                                            "memused_res(MB)",
-                                            "replica*server*memused.res(MB)",
-                                            "disk_capacity_total(MB)",
-                                            "replica*eon.replica_stub*disk.capacity.total(MB)",
-                                            "disk_available_total_ratio",
-                                            "replica*eon.replica_stub*disk.available.total.ratio",
-                                            "disk_available_min_ratio",
-                                            "replica*eon.replica_stub*disk.available.min.ratio",
-                                            "disk_available_max_ratio",
-                                            "replica*eon.replica_stub*disk.available.max.ratio"};
+// clang-format off
+static const char *s_brief_stat_mapper[] = {
+    "write_qps", "zion*profiler*RPC_L2_CLIENT_WRITE.qps",
+    "PUT_P99(ns)","zion*profiler*RPC_RRDB_RRDB_PUT.latency.server",
+    "MULTI_PUT_P99(ns)", "zion*profiler*RPC_RRDB_RRDB_MULTI_PUT.latency.server",
+    "read_qps", "zion*profiler*RPC_L2_CLIENT_READ.qps",
+    "GET_P99(ns)", "zion*profiler*RPC_RRDB_RRDB_GET.latency.server",
+    "MULTI_GET_P99(ns)", "zion*profiler*RPC_RRDB_RRDB_MULTI_GET.latency.server",
+    "serving_replica_count", "replica*eon.replica_stub*replica(Count)",
+    "opening_replica_count", "replica*eon.replica_stub*opening.replica(Count)",
+    "closing_replica_count", "replica*eon.replica_stub*closing.replica(Count)",
+    "commit_throughput", "replica*eon.replica_stub*replicas.commit.qps",
+    "learning_count", "replica*eon.replica_stub*replicas.learning.count",
+    "manual_compact_running_count", "replica*eon.replica_stub*manual.compact.running.count",
+    "manual_compact_queue_count", "replica*eon.replica_stub*manual.compact.queue.count",
+    "shared_log_size(MB)", "replica*eon.replica_stub*shared.log.size(MB)",
+    "memused_virt(MB)", "replica*server*memused.virt(MB)",
+    "memused_res(MB)", "replica*server*memused.res(MB)",
+    "disk_capacity_total(MB)", "replica*eon.replica_stub*disk.capacity.total(MB)",
+    "disk_available_total_ratio", "replica*eon.replica_stub*disk.available.total.ratio",
+    "disk_available_min_ratio", "replica*eon.replica_stub*disk.available.min.ratio",
+    "disk_available_max_ratio", "replica*eon.replica_stub*disk.available.max.ratio"
+};
+// clang-format on
 
 static void libevent_log(int severity, const char *msg)
 {
@@ -66,7 +59,7 @@ static void libevent_log(int severity, const char *msg)
         level = LOG_LEVEL_WARNING;
     else
         level = LOG_LEVEL_ERROR;
-    dlog(level, __TITLE__, msg);
+    dlog(level, msg);
 }
 
 #if defined(__linux__)
@@ -126,6 +119,21 @@ pegasus_counter_updater::pegasus_counter_updater()
       _brief_stat_count(0),
       _last_timestamp(0)
 {
+    ::dsn::command_manager::instance().register_command(
+        {"server-stat"},
+        "server-stat - query server statistics",
+        "server-stat",
+        [](const std::vector<std::string> &args) {
+            return ::pegasus::server::pegasus_counter_updater::instance().get_brief_stat();
+        });
+
+    ::dsn::command_manager::instance().register_command(
+        {"perf-counters"},
+        "perf-counters - query perf counters, supporting filter by POSIX basic regular expressions",
+        "perf-counters [name-filter]...",
+        [](const std::vector<std::string> &args) {
+            return ::pegasus::server::pegasus_counter_updater::instance().get_perf_counters(args);
+        });
 }
 
 pegasus_counter_updater::~pegasus_counter_updater() { stop(); }
@@ -170,9 +178,9 @@ void pegasus_counter_updater::falcon_initialize()
 
 void pegasus_counter_updater::start()
 {
-    _pfc_memused_virt.init(
+    _pfc_memused_virt.init_app_counter(
         "server", "memused.virt(MB)", COUNTER_TYPE_NUMBER, "virtual memory usage in MB");
-    _pfc_memused_res.init(
+    _pfc_memused_res.init_app_counter(
         "server", "memused.res(MB)", COUNTER_TYPE_NUMBER, "physical memory usage in MB");
 
     ::dsn::utils::auto_write_lock l(_lock);
@@ -185,9 +193,7 @@ void pegasus_counter_updater::start()
     _local_host = buf;
     _local_port = addr.port();
 
-    dsn_app_info info;
-    dsn_get_current_app_info(&info);
-    _app_name = info.name;
+    _app_name = dsn::service_app::current_service_app_info().full_name;
 
     _cluster_name = dsn_config_get_value_string(
         "pegasus.server", "perf_counter_cluster_name", "", "perf_counter_cluster_name");
@@ -232,32 +238,6 @@ void pegasus_counter_updater::stop()
     if (_report_timer != nullptr) {
         _report_timer->cancel();
     }
-}
-
-bool pegasus_counter_updater::register_handler(dsn::perf_counter *pc)
-{
-    ddebug("register pegasus perf counter handler: %s", pc->full_name());
-    ::dsn::utils::auto_write_lock l(_lock);
-    auto it = _perf_counters.find(pc);
-    if (it == _perf_counters.end()) {
-        _perf_counters[pc] = pc->type();
-        return true;
-    } else {
-        dassert(false, "registration confliction for '%s'", pc->name());
-        return false;
-    }
-}
-
-bool pegasus_counter_updater::unregister_handler(perf_counter *pc)
-{
-    ddebug("unregister pegasus perf counter handler: %s", pc->full_name());
-    ::dsn::utils::auto_write_lock l(_lock);
-    auto it = _perf_counters.find(pc);
-    if (it != _perf_counters.end()) {
-        _perf_counters.erase(it);
-        return true;
-    }
-    return false;
 }
 
 /*static*/
@@ -438,34 +418,25 @@ void pegasus_counter_updater::update()
     process_mem_usage(vm_usage, resident_set);
     uint64_t memused_virt = (uint64_t)vm_usage / 1024;
     uint64_t memused_res = (uint64_t)resident_set / 1024;
-    _pfc_memused_virt.set(memused_virt);
-    _pfc_memused_res.set(memused_res);
+    _pfc_memused_virt->set(memused_virt);
+    _pfc_memused_res->set(memused_res);
     ddebug("memused_virt = %" PRIu64 " MB, memused_res = %" PRIu64 "MB", memused_virt, memused_res);
 #endif
 
     std::vector<dsn::perf_counter_ptr> metrics;
     std::vector<double> values;
-    int64_t timestamp = 0;
 
-    {
-        // NOTICE: push perf counters to "metrics" vectors are write operations
-        ::dsn::utils::auto_write_lock l(_lock);
-        if (_perf_counters.size() == 0) {
-            ddebug("no need update for empty counters");
-            return;
-        }
-
-        uint64_t now = dsn_now_ms();
-        dinfo("update now_ms(%lld), last_report_time_ms(%lld)", now, _last_report_time_ms);
-        timestamp = now / 1000;
-        _last_report_time_ms = now;
-
-        metrics.reserve(_perf_counters.size());
-        for (const std::pair<perf_counter *, dsn_perf_counter_type_t> &kvp : _perf_counters) {
-            metrics.push_back(dsn::perf_counter_ptr(kvp.first));
-        }
+    ::dsn::perf_counters::instance().get_all_counters(&metrics);
+    if (metrics.empty()) {
+        ddebug("no need update, coz no counters added");
+        return;
     }
 
+    uint64_t now = dsn_now_ms();
+    dinfo("update now_ms(%lld), last_report_time_ms(%lld)", now, _last_report_time_ms);
+    _last_report_time_ms = now;
+
+    int64_t timestamp = now / 1000;
     values.reserve(metrics.size());
 
     // in case the get_xxx functions for the perf counters had SIDE EFFECTS

@@ -10,9 +10,8 @@
 
 #include <pegasus/version.h>
 #include <pegasus/git_commit.h>
-#include <dsn/cpp/replicated_service_app.h>
 #include <dsn/tool_api.h>
-#include <dsn/tool-api/command.h>
+#include <dsn/tool-api/command_manager.h>
 
 #include <cstdio>
 #include <cstring>
@@ -23,11 +22,6 @@
 #include <unistd.h>
 #endif
 
-#ifdef __TITLE__
-#undef __TITLE__
-#endif
-#define __TITLE__ "pegasus.server.main"
-
 #define STR_I(var) #var
 #define STR(var) STR_I(var)
 #ifndef DSN_BUILD_TYPE
@@ -36,28 +30,30 @@
 #define PEGASUS_BUILD_TYPE STR(DSN_BUILD_TYPE)
 #endif
 
+using namespace dsn;
+using namespace dsn::replication;
+
 void dsn_app_registration_pegasus()
 {
-    // register all possible service apps
-    dsn_task_code_register(
+    dsn::task_code rpc_read(
         "RPC_L2_CLIENT_READ", TASK_TYPE_RPC_REQUEST, TASK_PRIORITY_COMMON, THREAD_POOL_LOCAL_APP);
-    dsn_task_code_register(
+    dsn::task_code rpc_write(
         "RPC_L2_CLIENT_WRITE", TASK_TYPE_RPC_REQUEST, TASK_PRIORITY_LOW, THREAD_POOL_REPLICATION);
-    ::dsn::register_layer2_framework<::pegasus::server::pegasus_replication_service_app>(
-        "replica", DSN_APP_MASK_FRAMEWORK);
+    dsn_meta_sever_register_providers();
 
-    ::dsn::register_app<::pegasus::server::pegasus_meta_service_app>("meta");
-    ::dsn::register_app_with_type_1_replication_support<::pegasus::server::pegasus_server_impl>(
-        "pegasus");
-    ::dsn::register_app<::pegasus::server::info_collector_app>("collector");
+    service_app::register_factory<::pegasus::server::pegasus_replication_service_app>("replica");
+    service_app::register_factory<::pegasus::server::pegasus_meta_service_app>("meta");
+    service_app::register_factory<::pegasus::server::info_collector_app>("collector");
+
+    pegasus::server::pegasus_server_impl::register_service();
 
     ::dsn::tools::internal_use_only::register_component_provider(
         "pegasus::server::pegasus_perf_counter",
         pegasus::server::pegasus_perf_counter_factory,
         ::dsn::PROVIDER_TYPE_MAIN);
 
-    ::dsn::register_command(
-        "server-info",
+    ::dsn::command_manager::instance().register_command(
+        {"server-info"},
         "server-info - query server information",
         "server-info",
         [](const std::vector<std::string> &args) {
@@ -67,22 +63,6 @@ void dsn_app_registration_pegasus()
             oss << "Pegasus Server " << PEGASUS_VERSION << " (" << PEGASUS_GIT_COMMIT << ") "
                 << PEGASUS_BUILD_TYPE << ", Started at " << str;
             return oss.str();
-        });
-
-    ::dsn::register_command(
-        "server-stat",
-        "server-stat - query server statistics",
-        "server-stat",
-        [](const std::vector<std::string> &args) {
-            return ::pegasus::server::pegasus_counter_updater::instance().get_brief_stat();
-        });
-
-    ::dsn::register_command(
-        "perf-counters",
-        "perf-counters - query perf counters, supporting filter by POSIX basic regular expressions",
-        "perf-counters [name-filter]...",
-        [](const std::vector<std::string> &args) {
-            return ::pegasus::server::pegasus_counter_updater::instance().get_perf_counters(args);
         });
 }
 
@@ -114,7 +94,7 @@ int main(int argc, char **argv)
                    PEGASUS_VERSION,
                    PEGASUS_GIT_COMMIT,
                    PEGASUS_BUILD_TYPE);
-            return 0;
+            dsn_exit(0);
         }
     }
     ddebug("pegasus server starting, pid(%d), version(%s)", (int)getpid(), pegasus_server_rcsid());

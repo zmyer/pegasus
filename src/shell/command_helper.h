@@ -25,6 +25,7 @@
 #include <fstream>
 #include <iomanip>
 #include <thread>
+#include <queue>
 
 using namespace dsn::replication;
 
@@ -43,6 +44,50 @@ enum scan_data_operator
     SCAN_CLEAR,
     SCAN_COUNT
 };
+class top_container
+{
+public:
+    struct top_heap_item
+    {
+        std::string hash_key;
+        std::string sort_key;
+        long row_size;
+        top_heap_item(std::string &&hash_key_, std::string &&sort_key_, long row_size_)
+            : hash_key(std::move(hash_key_)), sort_key(std::move(sort_key_)), row_size(row_size_)
+        {
+        }
+    };
+    struct top_heap_compare
+    {
+        bool operator()(top_heap_item i1, top_heap_item i2) { return i1.row_size < i2.row_size; }
+    };
+    typedef std::priority_queue<top_heap_item, std::vector<top_heap_item>, top_heap_compare>
+        top_heap;
+
+    top_container(int count) : _count(count) {}
+
+    void push(std::string &&hash_key, std::string &&sort_key, long row_size)
+    {
+        dsn::utils::auto_lock<dsn::utils::ex_lock_nr> l(_lock);
+        if (_heap.size() < _count) {
+            _heap.emplace(std::move(hash_key), std::move(sort_key), row_size);
+        } else {
+            const top_heap_item &top = _heap.top();
+            if (top.row_size < row_size) {
+                _heap.pop();
+                _heap.emplace(std::move(hash_key), std::move(sort_key), row_size);
+            }
+        }
+    }
+
+    top_heap &all() { return _heap; }
+
+private:
+    int _count;
+    top_heap _heap;
+    dsn::utils::ex_lock_nr _lock;
+};
+
 struct scan_data_context
 {
     scan_data_operator op;
@@ -63,6 +108,8 @@ struct scan_data_context
     std::atomic_long value_size_sum;
     std::atomic_long value_size_max;
     std::atomic_long row_size_max;
+    int top_count;
+    top_container top_rows;
     scan_data_context(scan_data_operator op_,
                       int split_id_,
                       int max_batch_count_,
@@ -70,7 +117,8 @@ struct scan_data_context
                       pegasus::pegasus_client::pegasus_scanner_wrapper scanner_,
                       pegasus::pegasus_client *client_,
                       std::atomic_bool *error_occurred_,
-                      bool stat_size_)
+                      bool stat_size_ = false,
+                      int top_count_ = 0)
         : op(op_),
           split_id(split_id_),
           max_batch_count(max_batch_count_),
@@ -88,7 +136,9 @@ struct scan_data_context
           sort_key_size_max(0),
           value_size_sum(0),
           value_size_max(0),
-          row_size_max(0)
+          row_size_max(0),
+          top_count(top_count_),
+          top_rows(top_count_)
     {
     }
 };
@@ -170,8 +220,12 @@ inline void scan_data_next(scan_data_context *context)
                         long value_size = value.size();
                         context->value_size_sum += value_size;
                         update_atomic_max(context->value_size_max, value_size);
-                        update_atomic_max(context->row_size_max,
-                                          hash_key_size + sort_key_size + value_size);
+                        long row_size = hash_key_size + sort_key_size + value_size;
+                        update_atomic_max(context->row_size_max, row_size);
+                        if (context->top_count > 0) {
+                            context->top_rows.push(
+                                std::move(hash_key), std::move(sort_key), row_size);
+                        }
                     }
                     scan_data_next(context);
                     break;
@@ -282,6 +336,9 @@ struct row_data
     double remove_qps;
     double multi_remove_qps;
     double scan_qps;
+    double recent_expire_count;
+    double recent_filter_count;
+    double recent_abnormal_count;
     double storage_mb;
     double storage_count;
     row_data()
@@ -292,6 +349,9 @@ struct row_data
           remove_qps(0),
           multi_remove_qps(0),
           scan_qps(0),
+          recent_expire_count(0),
+          recent_filter_count(0),
+          recent_abnormal_count(0),
           storage_mb(0),
           storage_count(0)
     {
@@ -314,6 +374,12 @@ update_app_pegasus_perf_counter(row_data &row, const std::string &counter_name, 
         row.multi_remove_qps += value;
     else if (counter_name == "scan_qps")
         row.scan_qps += value;
+    else if (counter_name == "recent.expire.count")
+        row.recent_expire_count += value;
+    else if (counter_name == "recent.filter.count")
+        row.recent_filter_count += value;
+    else if (counter_name == "recent.abnormal.count")
+        row.recent_abnormal_count += value;
     else if (counter_name == "disk.storage.sst(MB)")
         row.storage_mb += value;
     else if (counter_name == "disk.storage.sst.count")
@@ -328,7 +394,7 @@ get_app_stat(shell_context *sc, const std::string &app_name, std::vector<row_dat
     std::vector<::dsn::app_info> apps;
     dsn::error_code err = sc->ddl_client->list_apps(dsn::app_status::AS_AVAILABLE, apps);
     if (err != dsn::ERR_OK) {
-        derror("list apps failed, error = %s", dsn_error_to_string(err));
+        derror("list apps failed, error = %s", err.to_string());
         return true;
     }
 
@@ -373,7 +439,7 @@ get_app_stat(shell_context *sc, const std::string &app_name, std::vector<row_dat
                 app.app_name, app_id, partition_count, app_partitions[app.app_id]);
             if (err != ::dsn::ERR_OK) {
                 derror(
-                    "list app %s failed, error = %s", app_name.c_str(), dsn_error_to_string(err));
+                    "list app %s failed, error = %s", app_name.c_str(), err.to_string());
                 return true;
             }
             dassert(app_id == app.app_id, "%d VS %d", app_id, app.app_id);
@@ -437,7 +503,7 @@ get_app_stat(shell_context *sc, const std::string &app_name, std::vector<row_dat
         dsn::error_code err =
             sc->ddl_client->list_app(app_name, app_id, partition_count, partitions);
         if (err != ::dsn::ERR_OK) {
-            derror("list app %s failed, error = %s", app_name.c_str(), dsn_error_to_string(err));
+            derror("list app %s failed, error = %s", app_name.c_str(), err.to_string());
             return true;
         }
         dassert(app_id == app_info->app_id, "%d VS %d", app_id, app_info->app_id);
